@@ -138,6 +138,7 @@ constexpr char COMMAND_POP_MESHES[]						= "POP_MESHES";
 constexpr char COMMAND_NO_TIMESTAMP[]					= "NO_TIMESTAMP";
 constexpr char COMMAND_MOMENT[]							= "MOMENT";
 constexpr char COMMAND_FEATURE[]						= "FEATURE";
+constexpr char COMMAND_OSGV[]                           = "OSGV";
 
 //options / modifiers
 constexpr char COMMAND_MAX_THREAD_COUNT[]				= "MAX_TCOUNT";
@@ -3885,9 +3886,9 @@ bool CommandDist::process(ccCommandLineInterface &cmd)
 		compDlg.cancelAndExit();
 		return cmd.error(QObject::tr("An error occurred during distances computation!"));
 	}
-	
+
 	compDlg.applyAndExit();
-	
+
 	QString suffix(m_cloud2meshDist ? "_C2M_DIST" : "_C2C_DIST");
 	if (maxDist > 0)
 	{
@@ -5463,4 +5464,51 @@ bool CommandFeature::process(ccCommandLineInterface &cmd)
 		}
 	}
 	return true;
+}
+
+CommandOSGV::CommandOSGV()
+        : ccCommandLineInterface::Command(QObject::tr("OSGV"), COMMAND_OSGV)
+{}
+
+bool CommandOSGV::process(ccCommandLineInterface &cmd)
+{
+    // TODO: Ensure params are valid.
+
+    // TODO: Ensure there are two meshes loaded.
+
+    // TODO: Normalize scans and convert to pclouds.
+
+    // TODO: Validate pclouds.
+
+    // TODO: Write the stats to comparison results file.
+    // TODO: Convert the clouds to triangular meshes.
+    // TODO: Merge meshes and export to file.
+
+    return true;
+}
+
+ccPointCloud *CommandOSGV::normalizeScan(ccGenericMesh *mesh, bool isUpperJaw, int rotAxis)
+{
+    // TODO: If upperJaw, rotate 180 degress around specified axis.
+
+    // TODO: Sample points on mesh faces and convert into pcloud.
+
+    // TODO: Iteratively apply height ramp, convert to SF and filter by 'B' channel.
+
+    // TODO: Return pcloud.
+
+    return nullptr;
+}
+
+bool CommandOSGV::validateScans(ccPointCloud *upperJaw, ccPointCloud *lowerJaw, CompMetrics &outMetrics)
+{
+    // TODO: Match cloud centers.
+
+    // TODO: Align the clouds using ICP registration.
+
+    // TODO: Calculate the difference between the clouds.
+
+    // TODO: Fill metrics struct.
+
+    return true;
 }

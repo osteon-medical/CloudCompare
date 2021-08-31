@@ -477,4 +477,25 @@ struct CommandFeature : public ccCommandLineInterface::Command
 	bool process(ccCommandLineInterface& cmd) override;
 };
 
+struct CommandOSGV : public ccCommandLineInterface::Command
+{
+    CommandOSGV();
+
+    bool process(ccCommandLineInterface& cmd) override;
+
+private:
+
+    struct CompMetrics
+    {
+        ScalarType diffMin;
+        ScalarType diffMax;
+        ScalarType diffMean;
+        ScalarType rms;
+    };
+
+    ccPointCloud *normalizeScan(ccGenericMesh *mesh, bool isUpperJaw = false, int rotAxis = 1);
+
+    bool validateScans(ccPointCloud *upperJaw, ccPointCloud *lowerJaw, CompMetrics &outMetrics);
+};
+
 #endif //COMMAND_LINE_COMMANDS_HEADER
