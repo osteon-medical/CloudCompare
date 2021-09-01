@@ -487,16 +487,23 @@ private:
 
     struct CompMetrics
     {
-        ScalarType diffMin;
-        ScalarType diffMax;
         ScalarType diffMean;
+        ScalarType diffVariance;
         ScalarType rms;
+
+        QString toString() const {
+            return QObject::tr("RMS %1\nMeanDist %2\nVarianceDist %3")
+                .arg(rms)
+                .arg(diffMean)
+                .arg(diffVariance);
+        }
     };
 
     bool normalizeScan(ccCommandLineInterface& cmd, ccGenericMesh *mesh, ccPointCloud *&outCloud,
                        bool isUpperJaw = false, int rotAxis = 1);
 
-    bool validateScans(ccPointCloud *upperJaw, ccPointCloud *lowerJaw, CompMetrics &outMetrics);
+    bool validateScans(ccCommandLineInterface& cmd, ccPointCloud *upperJaw, ccPointCloud *lowerJaw,
+                       CompMetrics &outMetrics);
 };
 
 #endif //COMMAND_LINE_COMMANDS_HEADER

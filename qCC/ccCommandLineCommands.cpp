@@ -5493,33 +5493,30 @@ bool CommandOSGV::process(ccCommandLineInterface &cmd)
     {
         return cmd.error(QObject::tr("Missing meshes: '%1' requires two meshes loaded").arg(COMMAND_OSGV));
     }
-    auto upperJawFileName = cmd.meshes()[0].basename;
-    auto lowerJawFileName = cmd.meshes()[1].basename;
+    auto upperJawDesc = cmd.meshes()[0];
+    auto lowerJawDesc = cmd.meshes()[1];
+    auto upperJawFileName = upperJawDesc.basename;
+    auto lowerJawFileName = lowerJawDesc.basename;
 
-    // Normalize the scan meshes into point clouds.
+    // Normalize the scan meshes.
     ccPointCloud *upperJaw, *lowerJaw;
-    if (!normalizeScan(cmd, cmd.meshes()[0].mesh, upperJaw, true, rotAxis))
+    if (!normalizeScan(cmd, upperJawDesc.mesh, upperJaw, true, rotAxis))
     {
         return cmd.error(QObject::tr("Failed to normalize upper jaw scan"));
     }
-    if (!normalizeScan(cmd, cmd.meshes()[1].mesh, lowerJaw))
+    if (!normalizeScan(cmd, lowerJawDesc.mesh, lowerJaw))
     {
         return cmd.error(QObject::tr("Failed to normalize lower jaw scan"));
     }
 
     // Perform the scan point cloud validation.
     CompMetrics metrics;
-    if (!validateScans(upperJaw, lowerJaw, metrics))
+    if (!validateScans(cmd, upperJaw, lowerJaw, metrics))
     {
         return cmd.error(QObject::tr("Point cloud scan validation failed"));
     }
 
-    // TODO: Write the stats to comparison results file.
-
-    // TODO: Convert the clouds to triangular meshes.
-
     // Merge the resulting point clouds.
-    cmd.print(QObject::tr("Merging point clouds"));
     unsigned beforePts = lowerJaw->size();
     unsigned newPts = upperJaw->size();
     *lowerJaw += upperJaw;
@@ -5533,22 +5530,31 @@ bool CommandOSGV::process(ccCommandLineInterface &cmd)
         return cmd.error(QObject::tr("Merge failed! (not enough memory?)"));
     }
 
-    // Export to a file.
-    QDir dir(".tmp");
+    // Export the final mesh to a file.
+    auto outputDir = QObject::tr(".tmp/%1_%2").arg(upperJawFileName).arg(lowerJawFileName);
+    QDir dir(outputDir);
     if (!dir.exists())
     {
         dir.mkpath(".");
     }
-    QFileInfo fInfo(QObject::tr(".tmp/$1_$2").arg(upperJawFileName).arg(lowerJawFileName));
+    QFileInfo fInfo(QObject::tr("%1/mesh_result").arg(outputDir));
     auto basename = fInfo.fileName();
     auto path = fInfo.filePath().left(fInfo.filePath().length() - fInfo.fileName().length());
-    cmd.print(QObject::tr("Exporting resulting point cloud to $1/$2").arg(path).arg(basename));
     auto desc = CLCloudDesc(lowerJaw, basename, path);
-    auto errorStr = cmd.exportEntity(desc, nullptr, nullptr, ccCommandLineInterface::ExportOption::ForceNoTimestamp);
+    auto errorStr = cmd.exportEntity(desc, nullptr, nullptr,
+                                     ccCommandLineInterface::ExportOption::ForceNoTimestamp);
     if (!errorStr.isEmpty())
     {
         return cmd.error(errorStr);
     }
+
+    // Export comparison results to file.
+    QString txtFilename = QObject::tr("%1/comparison_results.txt").arg(outputDir);
+    QFile txtFile(txtFilename);
+    txtFile.open(QIODevice::WriteOnly | QIODevice::Text);
+    QTextStream txtStream(&txtFile);
+    txtStream << metrics.toString();
+    txtFile.close();
 
     return true;
 }
@@ -5559,7 +5565,6 @@ bool CommandOSGV::normalizeScan(ccCommandLineInterface &cmd, ccGenericMesh *mesh
     // If upperJaw, rotate 180 degrees around specified axis.
     if (isUpperJaw)
     {
-        cmd.print(QObject::tr("Rotating mesh 180 degrees around axis %1").arg(rotAxis));
         if (rotAxis == 1) // Y
         {
             const double rotMat[] = {
@@ -5591,7 +5596,8 @@ bool CommandOSGV::normalizeScan(ccCommandLineInterface &cmd, ccGenericMesh *mesh
         return cmd.error(QObject::tr("Cloud sampling failed!"));
     }
 
-    // Iteratively apply height ramp and filter by 'B' (blue) scalar field to try and remove as much of the gums as possible.
+    // Iteratively apply height ramp and filter by 'B' (blue) scalar field to try and remove as much of the gums
+    // as possible.
     const QVector<int> maxValues({0, 164, 200});
     auto colorScale = ccColorScalesManager::GetDefaultScale();
     for (int maxVal : maxValues) {
@@ -5624,7 +5630,8 @@ bool CommandOSGV::normalizeScan(ccCommandLineInterface &cmd, ccGenericMesh *mesh
     return true;
 }
 
-bool CommandOSGV::validateScans(ccPointCloud *upperJaw, ccPointCloud *lowerJaw, CompMetrics &outMetrics)
+bool CommandOSGV::validateScans(ccCommandLineInterface& cmd, ccPointCloud *upperJaw, ccPointCloud *lowerJaw,
+                                CompMetrics &outMetrics)
 {
     // Match pcloud bounding-box centers.
     auto lowerJawCenter = lowerJaw->getOwnBB().getCenter();
@@ -5634,11 +5641,77 @@ bool CommandOSGV::validateScans(ccPointCloud *upperJaw, ccPointCloud *lowerJaw, 
     glTrans += T;
     upperJaw->applyGLTransformation_recursive(&glTrans);
 
-    // TODO: Align the clouds using ICP registration.
+    //  Align the clouds using ICP registration.
+    bool referenceIsFirst = false;
+    bool adjustScale = false;
+    bool enableFarthestPointRemoval = false;
+    double minErrorDiff = 1.0e-6;
+    unsigned iterationCount = 0;
+    unsigned randomSamplingLimit = 20000;
+    unsigned overlap = 100;
+    int modelSFAsWeights = -1;
+    int dataSFAsWeights = -1;
+    int maxThreadCount = 0;
+    int transformationFilters = 0;
+    ccGLMatrix transMat;
+    double finalError = 0.0;
+    double finalScale = 1.0;
+    unsigned finalPointCount = 0;
 
-    // TODO: Calculate the difference between the clouds.
+    CCCoreLib::ICPRegistrationTools::Parameters parameters;
+    {
+        parameters.convType					= (iterationCount != 0 ? CCCoreLib::ICPRegistrationTools::MAX_ITER_CONVERGENCE : CCCoreLib::ICPRegistrationTools::MAX_ERROR_CONVERGENCE);
+        parameters.minRMSDecrease			= minErrorDiff;
+        parameters.nbMaxIterations			= iterationCount;
+        parameters.adjustScale				= adjustScale;
+        parameters.filterOutFarthestPoints	= enableFarthestPointRemoval;
+        parameters.samplingLimit			= randomSamplingLimit;
+        parameters.finalOverlapRatio		= overlap / 100.0;
+        parameters.transformationFilters	= transformationFilters;
+        parameters.maxThreadCount			= maxThreadCount;
+        parameters.useC2MSignedDistances	= false; //TODO
+        parameters.normalsMatching			= CCCoreLib::ICPRegistrationTools::NO_NORMAL; //TODO
+    }
 
-    // TODO: Fill metrics struct.
+    if (!ccRegistrationTools::ICP(upperJaw,
+                                 lowerJaw,
+                                 transMat,
+                                 finalScale,
+                                 finalError,
+                                 finalPointCount,
+                                 parameters,
+                                 dataSFAsWeights >= 0,
+                                 modelSFAsWeights >= 0,
+                                 cmd.widgetParent()))
+    {
+        return cmd.error(QObject::tr("ICP registration failed"));
+    }
+    upperJaw->applyGLTransformation_recursive(&transMat);
+
+    // Calculate the difference between the clouds.
+    ccComparisonDlg compDlg(upperJaw,
+                            lowerJaw,
+                            ccComparisonDlg::CLOUDCLOUD_DIST,
+                            cmd.widgetParent());
+    if (!compDlg.initDialog())
+    {
+        return cmd.error(QObject::tr("Failed to initialize comparison dialog"));
+    }
+    if (!compDlg.computeDistances())
+    {
+        compDlg.cancelAndExit();
+        return cmd.error(QObject::tr("An error occurred during distances computation!"));
+    }
+    compDlg.applyAndExit();
+    ScalarType mean;
+    ScalarType variance;
+    upperJaw->getCurrentDisplayedScalarField()->computeMinAndMax();
+    upperJaw->getCurrentDisplayedScalarField()->computeMeanAndVariance(mean, &variance);
+
+    // Fill metrics struct.
+    outMetrics.rms = finalError;
+    outMetrics.diffMean = mean;
+    outMetrics.diffVariance = sqrt(variance);
 
     return true;
 }
