@@ -1293,7 +1293,7 @@ namespace ccEntityAction
 		return true;
 	}
 	
-	bool	sfFromColor(const ccHObject::Container &selectedEntities, QWidget *parent)
+	bool	sfFromColor(const ccHObject::Container &selectedEntities, QWidget *parent, bool exportRGB)
 	{
 		//candidates
 		std::unordered_set<ccPointCloud*> clouds;
@@ -1307,17 +1307,26 @@ namespace ccEntityAction
 		
 		if (clouds.empty())
 			return false;
-		
-		ccScalarFieldFromColorDlg dialog(parent);
-		if (!dialog.exec())
-			return false;
-		
-		const bool exportR = dialog.getRStatus();
-		const bool exportG = dialog.getGStatus();
-		const bool exportB = dialog.getBStatus();
-		const bool exportAlpha = dialog.getAlphaStatus();
-		const bool exportComposite = dialog.getCompositeStatus();
-		
+
+        bool exportR, exportG, exportB, exportAlpha, exportComposite;
+        if (exportRGB) {
+            exportR = true;
+            exportG = true;
+            exportB = true;
+            exportAlpha = false;
+            exportComposite = false;
+        } else {
+            ccScalarFieldFromColorDlg dialog(parent);
+            if (!dialog.exec())
+                return false;
+
+            exportR = dialog.getRStatus();
+            exportG = dialog.getGStatus();
+            exportB = dialog.getBStatus();
+            exportAlpha = dialog.getAlphaStatus();
+            exportComposite = dialog.getCompositeStatus();
+        }
+
 		for (const auto cloud : clouds)
 		{
 			std::vector<ccScalarField*> fields(5, nullptr);

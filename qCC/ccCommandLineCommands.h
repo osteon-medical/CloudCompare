@@ -493,7 +493,8 @@ private:
         ScalarType rms;
     };
 
-    ccPointCloud *normalizeScan(ccGenericMesh *mesh, bool isUpperJaw = false, int rotAxis = 1);
+    bool normalizeScan(ccCommandLineInterface& cmd, ccGenericMesh *mesh, ccPointCloud *&outCloud,
+                       bool isUpperJaw = false, int rotAxis = 1);
 
     bool validateScans(ccPointCloud *upperJaw, ccPointCloud *lowerJaw, CompMetrics &outMetrics);
 };

@@ -16,6 +16,7 @@
 #include <ccProgressDialog.h>
 #include <ccScalarField.h>
 #include <ccVolumeCalcTool.h>
+#include <ccColorScalesManager.h>
 
 //qCC_io
 #include <AsciiFilter.h>
@@ -32,6 +33,7 @@
 
 //Qt
 #include "ccCommandLineCommands.h"
+#include <QDir>
 
 //Local
 #include "ccEntityAction.h"
@@ -5472,37 +5474,165 @@ CommandOSGV::CommandOSGV()
 
 bool CommandOSGV::process(ccCommandLineInterface &cmd)
 {
-    // TODO: Ensure params are valid.
+    // Parse the optional rotation axis argument.
+    unsigned rotAxis = 1; // Y
+    {
+        if (!cmd.arguments().empty() && cmd.arguments().takeFirst().toUpper() == "-ROT_AXIS")
+        {
+            bool conversionOk = false;
+            rotAxis = cmd.arguments().takeFirst().toUInt(&conversionOk);
+            if (!conversionOk)
+            {
+                return cmd.error(QObject::tr("Invalid parameter: axis after -ROT_AXIS"));
+            }
+        }
+    }
 
-    // TODO: Ensure there are two meshes loaded.
+    // Ensure that two meshes are loaded.
+    if (cmd.meshes().size() != 2)
+    {
+        return cmd.error(QObject::tr("Missing meshes: '%1' requires two meshes loaded").arg(COMMAND_OSGV));
+    }
+    auto upperJawFileName = cmd.meshes()[0].basename;
+    auto lowerJawFileName = cmd.meshes()[1].basename;
 
-    // TODO: Normalize scans and convert to pclouds.
+    // Normalize the scan meshes into point clouds.
+    ccPointCloud *upperJaw, *lowerJaw;
+    if (!normalizeScan(cmd, cmd.meshes()[0].mesh, upperJaw, true, rotAxis))
+    {
+        return cmd.error(QObject::tr("Failed to normalize upper jaw scan"));
+    }
+    if (!normalizeScan(cmd, cmd.meshes()[1].mesh, lowerJaw))
+    {
+        return cmd.error(QObject::tr("Failed to normalize lower jaw scan"));
+    }
 
-    // TODO: Validate pclouds.
+    // Perform the scan point cloud validation.
+    CompMetrics metrics;
+    if (!validateScans(upperJaw, lowerJaw, metrics))
+    {
+        return cmd.error(QObject::tr("Point cloud scan validation failed"));
+    }
 
     // TODO: Write the stats to comparison results file.
+
     // TODO: Convert the clouds to triangular meshes.
-    // TODO: Merge meshes and export to file.
+
+    // Merge the resulting point clouds.
+    cmd.print(QObject::tr("Merging point clouds"));
+    unsigned beforePts = lowerJaw->size();
+    unsigned newPts = upperJaw->size();
+    *lowerJaw += upperJaw;
+    if (lowerJaw->size() == beforePts + newPts) // Success?
+    {
+        delete upperJaw;
+        upperJaw = nullptr;
+    }
+    else
+    {
+        return cmd.error(QObject::tr("Merge failed! (not enough memory?)"));
+    }
+
+    // Export to a file.
+    QDir dir(".tmp");
+    if (!dir.exists())
+    {
+        dir.mkpath(".");
+    }
+    QFileInfo fInfo(QObject::tr(".tmp/$1_$2").arg(upperJawFileName).arg(lowerJawFileName));
+    auto basename = fInfo.fileName();
+    auto path = fInfo.filePath().left(fInfo.filePath().length() - fInfo.fileName().length());
+    cmd.print(QObject::tr("Exporting resulting point cloud to $1/$2").arg(path).arg(basename));
+    auto desc = CLCloudDesc(lowerJaw, basename, path);
+    auto errorStr = cmd.exportEntity(desc, nullptr, nullptr, ccCommandLineInterface::ExportOption::ForceNoTimestamp);
+    if (!errorStr.isEmpty())
+    {
+        return cmd.error(errorStr);
+    }
 
     return true;
 }
 
-ccPointCloud *CommandOSGV::normalizeScan(ccGenericMesh *mesh, bool isUpperJaw, int rotAxis)
+bool CommandOSGV::normalizeScan(ccCommandLineInterface &cmd, ccGenericMesh *mesh, ccPointCloud *&outCloud,
+                                bool isUpperJaw, int rotAxis)
 {
-    // TODO: If upperJaw, rotate 180 degress around specified axis.
+    // If upperJaw, rotate 180 degrees around specified axis.
+    if (isUpperJaw)
+    {
+        cmd.print(QObject::tr("Rotating mesh 180 degrees around axis %1").arg(rotAxis));
+        if (rotAxis == 1) // Y
+        {
+            const double rotMat[] = {
+                -1.000000000000, 0.000000000000, -0.000000087423, 0.000000000000,
+                0.000000000000,  1.000000000000, 0.000000000000,  0.000000000000,
+                0.000000087423,  0.000000000000, -1.000000000000, 0.000000000000,
+                0.000000000000,  0.000000000000, 0.000000000000,  1.000000000000
+            };
+            ccGLMatrix glRot(rotMat);
+            mesh->applyGLTransformation_recursive(&glRot);
+        }
+        else if (rotAxis == 0) // X
+        {
+            const double rotMat[] = {
+                1.000000000000, 0.000000000000, 0.000000000000, 0.000000000000,
+                0.000000000000, -1.000000000000, 0.000000087423, 0.000000000000,
+                0.000000000000, -0.000000087423, -1.000000000000, 0.000000000000,
+                0.000000000000, 0.000000000000, 0.000000000000, 1.000000000000
+            };
+            ccGLMatrix glRot(rotMat);
+            mesh->applyGLTransformation_recursive(&glRot);
+        }
+    }
 
-    // TODO: Sample points on mesh faces and convert into pcloud.
+    // Sample points on mesh faces and convert into pcloud.
+    outCloud = mesh->samplePoints(false, 100000, true, true, true);
+    if (!outCloud)
+    {
+        return cmd.error(QObject::tr("Cloud sampling failed!"));
+    }
 
-    // TODO: Iteratively apply height ramp, convert to SF and filter by 'B' channel.
+    // Iteratively apply height ramp and filter by 'B' (blue) scalar field to try and remove as much of the gums as possible.
+    const QVector<int> maxValues({0, 164, 200});
+    auto colorScale = ccColorScalesManager::GetDefaultScale();
+    for (int maxVal : maxValues) {
+        // Create the height ramp.
+        if (!outCloud->setRGBColorByHeight(2, colorScale))
+        {
+            return cmd.error(QObject::tr("Not enough memory"));
+        }
+        // Convert the RGB color channels to scalar fields.
+        ccHObject::Container container;
+        container.push_back(outCloud);
+        if (!ccEntityAction::sfFromColor(container, cmd.widgetParent(), true))
+        {
+            return cmd.error(QObject::tr("Failed to convert RGB color to scalar fields"));
+        }
+        // Filter cloud with current max value.
+        auto filteredCloud = outCloud->filterPointsByScalarValue(0, maxVal);
+        if (filteredCloud)
+        {
+            delete outCloud;
+            outCloud = filteredCloud;
+        }
+    }
+    // Remove all created scalar fields and colors.
+    outCloud->deleteAllScalarFields();
+    outCloud->showSF(false);
+    outCloud->unallocateColors();
+    outCloud->showColors(false);
 
-    // TODO: Return pcloud.
-
-    return nullptr;
+    return true;
 }
 
 bool CommandOSGV::validateScans(ccPointCloud *upperJaw, ccPointCloud *lowerJaw, CompMetrics &outMetrics)
 {
-    // TODO: Match cloud centers.
+    // Match pcloud bounding-box centers.
+    auto lowerJawCenter = lowerJaw->getOwnBB().getCenter();
+    auto upperJawCenter = upperJaw->getOwnBB().getCenter();
+    auto T = lowerJawCenter - upperJawCenter;
+    ccGLMatrix glTrans;
+    glTrans += T;
+    upperJaw->applyGLTransformation_recursive(&glTrans);
 
     // TODO: Align the clouds using ICP registration.
 
